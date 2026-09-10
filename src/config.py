@@ -3,11 +3,15 @@
 import os
 from pathlib import Path
 
+from dotenv import load_dotenv
+
 # --- Paths ---
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_INPUT_DIR = PROJECT_ROOT / "resumes"
 DEFAULT_OUTPUT_DIR = PROJECT_ROOT / "output"
 DEFAULT_OUTPUT_FILE = DEFAULT_OUTPUT_DIR / "results.json"
+
+load_dotenv(PROJECT_ROOT / ".env")
 
 # --- Supported file extensions ---
 SUPPORTED_EXTENSIONS = {".pdf", ".docx", ".txt"}
@@ -38,11 +42,11 @@ GITHUB_REPOS_MAX = 5
 GITHUB_TIMEOUT_SECONDS = 10
 
 # --- LLM settings (provider-agnostic) ---
-LLM_PROVIDER = os.getenv("LLM_PROVIDER", "openai")  # openai | anthropic | stub
-LLM_MODEL = os.getenv("LLM_MODEL", "gpt-4o-mini")
+LLM_PROVIDER = os.getenv("LLM_PROVIDER", "stub")  # openai | anthropic | gemini | ollama | stub
+LLM_MODEL = os.getenv("LLM_MODEL", "gemini-3.5-flash-lite")  # default per provider
 LLM_API_KEY = os.getenv("LLM_API_KEY", "")
 LLM_TIMEOUT_SECONDS = 30
-LLM_ENABLED = bool(LLM_API_KEY)
+LLM_ENABLED = LLM_PROVIDER != "stub" and bool(LLM_API_KEY)
 
 # --- Concurrency ---
 MAX_CONCURRENT_GITHUB = 5

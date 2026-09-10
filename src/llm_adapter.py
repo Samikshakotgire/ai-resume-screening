@@ -4,12 +4,42 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
+import time
+from collections import deque
 from typing import Any, Optional
 
 from src.config import LLM_API_KEY, LLM_ENABLED, LLM_MODEL, LLM_PROVIDER, LLM_TIMEOUT_SECONDS
 from src.models import Candidate, ScoreBreakdown
 
 logger = logging.getLogger(__name__)
+
+# --- Rate limiter (per-minute sliding window) ---
+_rate_limit_lock = threading.Lock()
+_request_timestamps: deque[float] = deque()
+RATE_LIMIT_MAX = 15  # max requests per minute
+RATE_LIMIT_WINDOW = 60  # window in seconds
+
+
+def _wait_for_rate_limit():
+    """Block until a request slot is available within the rate limit."""
+    while True:
+        with _rate_limit_lock:
+            now = time.time()
+            # Purge timestamps outside the window
+            while _request_timestamps and _request_timestamps[0] < now - RATE_LIMIT_WINDOW:
+                _request_timestamps.popleft()
+
+            if len(_request_timestamps) < RATE_LIMIT_MAX:
+                _request_timestamps.append(now)
+                return  # slot available
+
+            # Calculate wait time until the oldest request expires
+            wait_until = _request_timestamps[0] + RATE_LIMIT_WINDOW
+            wait_seconds = wait_until - now
+
+        logger.info(f"Rate limit: waiting {wait_seconds:.1f}s for next slot")
+        time.sleep(wait_seconds)
 
 
 def _call_openai(prompt: str, system_prompt: str = "") -> Optional[str]:
@@ -51,6 +81,28 @@ def _call_anthropic(prompt: str, system_prompt: str = "") -> Optional[str]:
         return None
 
 
+def _call_gemini(prompt: str, system_prompt: str = "") -> Optional[str]:
+    """Call Google Gemini API and return the response text."""
+    try:
+        import google.generativeai as genai
+        genai.configure(api_key=LLM_API_KEY)
+        model = genai.GenerativeModel(
+            model_name=LLM_MODEL or "gemini-2.0-flash",
+            system_instruction=system_prompt if system_prompt else None,
+        )
+        response = model.generate_content(
+            prompt,
+            generation_config=genai.GenerationConfig(
+                temperature=0.3,
+                max_output_tokens=1000,
+            ),
+        )
+        return response.text
+    except Exception as e:
+        logger.warning(f"Gemini API call failed: {e}")
+        return None
+
+
 def _call_stub(prompt: str, system_prompt: str = "") -> Optional[str]:
     """Stub LLM provider — returns None to trigger fallback."""
     logger.info("LLM stub called — falling back to rule-based logic")
@@ -60,19 +112,21 @@ def _call_stub(prompt: str, system_prompt: str = "") -> Optional[str]:
 PROVIDERS = {
     "openai": _call_openai,
     "anthropic": _call_anthropic,
+    "gemini": _call_gemini,
     "stub": _call_stub,
 }
 
 
 def call_llm(prompt: str, system_prompt: str = "") -> Optional[str]:
     """
-    Provider-agnostic LLM call.
+    Provider-agnostic LLM call with rate limiting.
     Returns response text or None on failure.
     """
     if not LLM_ENABLED:
         logger.debug("LLM not enabled (no API key), using stub")
         return _call_stub(prompt, system_prompt)
 
+    _wait_for_rate_limit()
     provider_func = PROVIDERS.get(LLM_PROVIDER, _call_stub)
     return provider_func(prompt, system_prompt)
 
